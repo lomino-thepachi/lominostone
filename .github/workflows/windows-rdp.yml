@@ -1,7 +1,14 @@
+```yaml
 name: Windows Cloud RDP
 
 on:
   workflow_dispatch:
+    inputs:
+      apps:
+        description: 'WinGet App IDs separated by commas (example: Microsoft.VisualStudioCode, 7zip.7zip, Git.Git)'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   build:
@@ -31,14 +38,14 @@ jobs:
             -Value 0 `
             -Force
 
-          # Enable Network Level Authentication (NLA)
+          # Enable Network Level Authentication
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
             -Name "UserAuthentication" `
             -Value 1 `
             -Force
 
-          # Disable Windows' broad built-in RDP firewall rules.
+          # Disable Windows' broad RDP firewall rules.
           # A Tailscale-only rule is created later.
           Disable-NetFirewallRule `
             -DisplayGroup "Remote Desktop" `
@@ -48,7 +55,7 @@ jobs:
 
 
       # ============================================================
-      # 2. Create the single dedicated RDP account
+      # 2. Create dedicated RDP user
       # ============================================================
       - name: 2. Create RDP Account
         shell: powershell
@@ -69,7 +76,6 @@ jobs:
             -AsPlainText `
             -Force
 
-          # Remove an existing account with the same name
           $ExistingUser = Get-LocalUser `
             -Name $env:RDP_USER `
             -ErrorAction SilentlyContinue
@@ -82,8 +88,7 @@ jobs:
                 -ErrorAction Stop
           }
 
-          # Create a standard local user.
-          # It is intentionally NOT an Administrator.
+          # Standard user only - NOT Administrator
           New-LocalUser `
             -Name $env:RDP_USER `
             -Password $SecurePassword `
@@ -92,21 +97,89 @@ jobs:
             -Description "Temporary GitHub Actions RDP user" `
             -ErrorAction Stop
 
-          # Grant RDP access only
+          # Allow RDP login
           Add-LocalGroupMember `
             -Group "Remote Desktop Users" `
             -Member $env:RDP_USER `
             -ErrorAction Stop
 
           Write-Host "RDP account created successfully."
-          Write-Host "RDP user: $env:RDP_USER"
           Write-Host "Administrator privileges: NO"
 
 
       # ============================================================
-      # 3. Install and connect Tailscale
+      # 3. Install selected applications with WinGet
       # ============================================================
-      - name: 3. Install & Connect Tailscale
+      - name: 3. Install Applications with WinGet
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $AppsInput = '${{ inputs.apps }}'
+
+          if ([string]::IsNullOrWhiteSpace($AppsInput)) {
+              Write-Host "No applications were requested."
+              Write-Host "Skipping WinGet installation."
+              exit 0
+          }
+
+          # Convert comma-separated input into individual IDs
+          $Packages = $AppsInput `
+            -split ',' `
+            | ForEach-Object { $_.Trim() } `
+            | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } `
+            | Select-Object -Unique
+
+          if ($Packages.Count -eq 0) {
+              Write-Host "No valid application IDs were provided."
+              exit 0
+          }
+
+          # Check WinGet
+          $Winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+
+          if (-not $Winget) {
+              throw "WinGet is not available on this runner."
+          }
+
+          Write-Host "WinGet found: $($Winget.Source)"
+          Write-Host ""
+          Write-Host "Applications requested:"
+          $Packages | ForEach-Object {
+              Write-Host " - $_"
+          }
+          Write-Host ""
+
+          foreach ($PackageId in $Packages) {
+
+              Write-Host "=============================================="
+              Write-Host "Installing: $PackageId"
+              Write-Host "=============================================="
+
+              & winget.exe install `
+                --id "$PackageId" `
+                --exact `
+                --silent `
+                --accept-package-agreements `
+                --accept-source-agreements `
+                --disable-interactivity `
+                --no-upgrade
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "WinGet failed to install '$PackageId'. Exit code: $LASTEXITCODE"
+              }
+
+              Write-Host "Successfully installed: $PackageId"
+              Write-Host ""
+          }
+
+          Write-Host "All requested applications were installed successfully."
+
+
+      # ============================================================
+      # 4. Install and connect Tailscale
+      # ============================================================
+      - name: 4. Install & Connect Tailscale
         shell: powershell
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
@@ -118,7 +191,7 @@ jobs:
               throw "TAILSCALE_AUTHKEY GitHub Secret is missing."
           }
 
-          $Installer   = "C:\tailscale.msi"
+          $Installer = "C:\tailscale.msi"
           $TailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
 
           Write-Host "Downloading Tailscale..."
@@ -168,9 +241,9 @@ jobs:
 
 
       # ============================================================
-      # 4. Allow RDP only from Tailscale
+      # 5. Allow RDP only from Tailscale
       # ============================================================
-      - name: 4. Configure Tailscale-only RDP Firewall
+      - name: 5. Configure Tailscale-only RDP Firewall
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -179,19 +252,16 @@ jobs:
 
           Write-Host "Configuring RDP firewall..."
 
-          # Disable broad Windows RDP firewall rules
           Disable-NetFirewallRule `
             -DisplayGroup "Remote Desktop" `
             -ErrorAction SilentlyContinue
 
-          # Remove an older copy of our custom rule if present
           Get-NetFirewallRule `
             -DisplayName $RuleName `
             -ErrorAction SilentlyContinue |
             Remove-NetFirewallRule `
             -ErrorAction SilentlyContinue
 
-          # Allow RDP only from Tailscale's CGNAT address range
           New-NetFirewallRule `
             -DisplayName $RuleName `
             -Direction Inbound `
@@ -206,9 +276,9 @@ jobs:
 
 
       # ============================================================
-      # 5. Verify RDP connectivity
+      # 6. Verify RDP connectivity
       # ============================================================
-      - name: 5. Verify RDP
+      - name: 6. Verify RDP
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -237,9 +307,9 @@ jobs:
 
 
       # ============================================================
-      # 6. Keep the runner alive for 6 hours
+      # 7. Keep the runner alive for 6 hours
       # ============================================================
-      - name: 6. Keep Server Alive (6 Hours)
+      - name: 7. Keep Server Alive (6 Hours)
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -260,8 +330,8 @@ jobs:
           Write-Host "=============================================="
           Write-Host ""
 
-          # 6 hours = 360 minutes
           for ($i = 1; $i -le 360; $i++) {
               Start-Sleep -Seconds 60
               Write-Host "[$i/360] Server running..."
           }
+```
