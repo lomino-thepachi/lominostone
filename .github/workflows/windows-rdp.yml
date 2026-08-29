@@ -33,7 +33,7 @@ jobs:
           Write-Host "Remote Desktop enabled."
 
       # ============================================================
-      # 2. Pre-install apps via winget (native, no admin RDP needed)
+      # 2. Pre-install Apps (winget)
       # ============================================================
       - name: 2. Pre-install Apps (winget)
         if: ${{ inputs.apps != '' }}
@@ -108,7 +108,7 @@ jobs:
           Write-Host "RDP restricted to Tailscale."
 
       # ============================================================
-      # 6. Verify RDP connectivity
+      # 6. Verify RDP connectivity (FIXED: variable expansion)
       # ============================================================
       - name: 6. Verify RDP
         shell: powershell
@@ -117,8 +117,9 @@ jobs:
           $TailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
           $ts_ip = (& $TailscaleExe ip -4).Trim()
           if ([string]::IsNullOrWhiteSpace($ts_ip)) { throw "Could not retrieve Tailscale IPv4." }
-          Write-Host "Testing RDP on $ts_ip:$env:RDP_PORT"
-          $result = Test-NetConnection -ComputerName $ts_ip -Port $env:RDP_PORT -WarningAction SilentlyContinue
+          $port = $env:RDP_PORT
+          Write-Host "Testing RDP on $ts_ip:$port"
+          $result = Test-NetConnection -ComputerName $ts_ip -Port $port -WarningAction SilentlyContinue
           if (-not $result.TcpTestSucceeded) { throw "RDP connectivity test failed." }
           Write-Host "RDP connectivity successful."
 
@@ -131,6 +132,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $TailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
           $ts_ip = (& $TailscaleExe ip -4).Trim()
+          $port = $env:RDP_PORT
           Write-Host ""
           Write-Host "=============================================="
           Write-Host "            RDP SERVER IS READY"
@@ -138,8 +140,8 @@ jobs:
           Write-Host "Tailscale IP : $ts_ip"
           Write-Host "Username     : $env:RDP_USER"
           Write-Host "Password     : Stored in GitHub Secret"
-          Write-Host "Admin Access : NO (pre-install via winget instead)"
-          Write-Host "RDP Port     : $env:RDP_PORT"
+          Write-Host "Admin Access : NO (pre-install via winget)"
+          Write-Host "RDP Port     : $port"
           Write-Host "Lifetime     : 6 Hours"
           Write-Host "=============================================="
           Write-Host ""
