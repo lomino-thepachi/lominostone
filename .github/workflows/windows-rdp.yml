@@ -16,47 +16,36 @@ jobs:
 
     env:
       RDP_USER: NvDAdmin
-      RDP_PORT: 3389
+      RDP_PORT: "3389"
       TAILSCALE_HOSTNAME: github-rdp-server
 
     steps:
 
-      # ============================================================
-      # 1. Enable Remote Desktop
-      # ============================================================
       - name: 1. Enable Remote Desktop
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "Enabling Remote Desktop..."
-
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name "fDenyTSConnections" `
+            -Name 'fDenyTSConnections' `
             -Value 0 `
             -Force
 
-          # Enable Network Level Authentication (NLA)
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "UserAuthentication" `
+            -Name 'UserAuthentication' `
             -Value 1 `
             -Force
 
-          # Disable Windows built-in broad RDP firewall rules.
-          # A Tailscale-only rule is created later.
           Disable-NetFirewallRule `
-            -DisplayGroup "Remote Desktop" `
+            -DisplayGroup 'Remote Desktop' `
             -ErrorAction SilentlyContinue
 
-          Write-Host "Remote Desktop enabled with NLA."
+          Write-Host 'Remote Desktop enabled with NLA.'
 
 
-      # ============================================================
-      # 2. Create RDP Administrator account
-      # ============================================================
-      - name: 2. Create RDP Account
+      - name: 2. Create RDP Administrator Account
         shell: powershell
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
@@ -64,58 +53,45 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
-              throw "RDP_PASSWORD GitHub Secret is missing."
+              throw 'RDP_PASSWORD GitHub Secret is missing.'
           }
-
-          Write-Host "Creating RDP account: $env:RDP_USER"
 
           $SecurePassword = ConvertTo-SecureString `
             $env:RDP_PASSWORD `
             -AsPlainText `
             -Force
 
-          # Remove existing account with the same name
           $ExistingUser = Get-LocalUser `
             -Name $env:RDP_USER `
             -ErrorAction SilentlyContinue
 
           if ($ExistingUser) {
-              Write-Host "Existing account found. Removing it..."
-
               Remove-LocalUser `
                 -Name $env:RDP_USER `
                 -ErrorAction Stop
           }
 
-          # Create the local user
           New-LocalUser `
             -Name $env:RDP_USER `
             -Password $SecurePassword `
             -PasswordNeverExpires:$false `
             -AccountNeverExpires:$false `
-            -Description "Temporary GitHub Actions RDP administrator" `
+            -Description 'Temporary GitHub Actions RDP administrator' `
             -ErrorAction Stop
 
-          # Allow RDP login
           Add-LocalGroupMember `
-            -Group "Remote Desktop Users" `
+            -Group 'Remote Desktop Users' `
             -Member $env:RDP_USER `
             -ErrorAction Stop
 
-          # Administrator privileges
           Add-LocalGroupMember `
-            -Group "Administrators" `
+            -Group 'Administrators' `
             -Member $env:RDP_USER `
             -ErrorAction Stop
 
-          Write-Host "RDP account created successfully."
-          Write-Host "Username: $env:RDP_USER"
-          Write-Host "Administrator: YES"
+          Write-Host 'RDP Administrator account created.'
 
 
-      # ============================================================
-      # 3. Install selected applications with WinGet
-      # ============================================================
       - name: 3. Install Applications with WinGet
         shell: powershell
         env:
@@ -123,47 +99,31 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $AppsInput = $env:APPS_INPUT
-
-          if ([string]::IsNullOrWhiteSpace($AppsInput)) {
-              Write-Host "No applications were requested."
-              Write-Host "Skipping WinGet installation."
+          if ([string]::IsNullOrWhiteSpace($env:APPS_INPUT)) {
+              Write-Host 'No applications requested.'
               exit 0
           }
 
-          Write-Host "Applications requested:"
-          Write-Host $AppsInput
-          Write-Host ""
+          $Packages = @(
+              $env:APPS_INPUT -split ','
+          ) | ForEach-Object {
+              $_.Trim()
+          } | Where-Object {
+              $_ -ne ''
+          } | Select-Object -Unique
 
-          # Split comma-separated IDs
-          $Packages = $AppsInput `
-            -split ',' `
-            | ForEach-Object { $_.Trim() } `
-            | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } `
-            | Select-Object -Unique
-
-          if ($Packages.Count -eq 0) {
-              throw "No valid WinGet package IDs were provided."
-          }
-
-          # Check WinGet availability
           $Winget = Get-Command winget.exe -ErrorAction SilentlyContinue
 
           if (-not $Winget) {
-              throw "WinGet is not available on this runner."
+              throw 'WinGet is not available on this runner.'
           }
-
-          Write-Host "WinGet found: $($Winget.Source)"
-          Write-Host ""
 
           foreach ($PackageId in $Packages) {
 
-              Write-Host "=============================================="
-              Write-Host "Installing: $PackageId"
-              Write-Host "=============================================="
+              Write-Host "Installing $PackageId"
 
               & winget.exe install `
-                --id "$PackageId" `
+                --id $PackageId `
                 --exact `
                 --silent `
                 --accept-package-agreements `
@@ -172,20 +132,14 @@ jobs:
                 --no-upgrade
 
               if ($LASTEXITCODE -ne 0) {
-                  throw "WinGet failed to install '$PackageId'. Exit code: $LASTEXITCODE"
+                  throw "WinGet failed for $PackageId. Exit code: $LASTEXITCODE"
               }
 
-              Write-Host "Successfully installed: $PackageId"
-              Write-Host ""
+              Write-Host "Installed $PackageId"
           }
 
-          Write-Host "All requested applications were installed successfully."
 
-
-      # ============================================================
-      # 4. Install and connect Tailscale
-      # ============================================================
-      - name: 4. Install & Connect Tailscale
+      - name: 4. Install and Connect Tailscale
         shell: powershell
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
@@ -193,22 +147,18 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTHKEY)) {
-              throw "TAILSCALE_AUTHKEY GitHub Secret is missing."
+              throw 'TAILSCALE_AUTHKEY GitHub Secret is missing.'
           }
 
-          $Installer = "C:\tailscale.msi"
-          $TailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
-
-          Write-Host "Downloading Tailscale..."
+          $Installer = 'C:\tailscale.msi'
+          $TailscaleExe = 'C:\Program Files\Tailscale\tailscale.exe'
 
           Invoke-WebRequest `
-            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" `
+            -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' `
             -OutFile $Installer
 
-          Write-Host "Installing Tailscale..."
-
           Start-Process `
-            -FilePath "msiexec.exe" `
+            -FilePath 'msiexec.exe' `
             -ArgumentList "/i `"$Installer`" /quiet /norestart" `
             -Wait `
             -NoNewWindow
@@ -221,28 +171,24 @@ jobs:
           Start-Sleep -Seconds 5
 
           if (-not (Test-Path $TailscaleExe)) {
-              throw "Tailscale executable was not found after installation."
+              throw 'Tailscale executable was not found.'
           }
-
-          Write-Host "Connecting Tailscale..."
 
           & $TailscaleExe up `
             --authkey="$env:TAILSCALE_AUTHKEY" `
             --hostname="$env:TAILSCALE_HOSTNAME" `
             --accept-routes=false `
-            --shields-up=false `
             --unattended
 
           if ($LASTEXITCODE -ne 0) {
-              throw "Tailscale connection failed."
+              throw 'Tailscale connection failed.'
           }
 
-          # Explicitly ensure subnet routes stay disabled.
           & $TailscaleExe set `
             --accept-routes=false
 
           if ($LASTEXITCODE -ne 0) {
-              throw "Failed to disable Tailscale subnet routes."
+              throw 'Failed to disable Tailscale subnet routes.'
           }
 
           Start-Sleep -Seconds 8
@@ -250,70 +196,55 @@ jobs:
           $ts_ip = (& $TailscaleExe ip -4).Trim()
 
           if ([string]::IsNullOrWhiteSpace($ts_ip)) {
-              throw "Tailscale IPv4 address was not assigned."
+              throw 'Tailscale IPv4 address was not assigned.'
           }
 
           Write-Host "Tailscale IPv4: $ts_ip"
-          Write-Host "Accept subnet routes: FALSE"
-          Write-Host "Incoming Tailscale connections: ENABLED"
 
 
-      # ============================================================
-      # 5. Allow RDP only from Tailscale
-      # ============================================================
       - name: 5. Configure Tailscale-only RDP Firewall
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $RuleName = "RDP over Tailscale Only"
+          $RuleName = 'RDP over Tailscale Only'
 
-          Write-Host "Configuring RDP firewall..."
-
-          # Disable Windows' broad RDP rules
           Disable-NetFirewallRule `
-            -DisplayGroup "Remote Desktop" `
+            -DisplayGroup 'Remote Desktop' `
             -ErrorAction SilentlyContinue
 
-          # Remove old copies of our custom rule
-          Get-NetFirewallRule `
+          $OldRules = Get-NetFirewallRule `
             -DisplayName $RuleName `
-            -ErrorAction SilentlyContinue |
-            Remove-NetFirewallRule `
             -ErrorAction SilentlyContinue
 
-          # Allow RDP only from Tailscale's CGNAT range
+          if ($OldRules) {
+              $OldRules | Remove-NetFirewallRule
+          }
+
           New-NetFirewallRule `
             -DisplayName $RuleName `
             -Direction Inbound `
             -Protocol TCP `
             -LocalPort $env:RDP_PORT `
-            -RemoteAddress "100.64.0.0/10" `
+            -RemoteAddress '100.64.0.0/10' `
             -Action Allow `
             -Profile Any `
             -ErrorAction Stop
 
-          Write-Host "RDP is restricted to Tailscale addresses only."
+          Write-Host 'RDP is restricted to Tailscale.'
 
 
-      # ============================================================
-      # 6. Verify RDP connectivity
-      # ============================================================
       - name: 6. Verify RDP
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $TailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
+          $TailscaleExe = 'C:\Program Files\Tailscale\tailscale.exe'
           $ts_ip = (& $TailscaleExe ip -4).Trim()
 
           if ([string]::IsNullOrWhiteSpace($ts_ip)) {
-              throw "Could not retrieve Tailscale IPv4."
+              throw 'Could not retrieve Tailscale IPv4.'
           }
-
-          Write-Host "Testing RDP connectivity..."
-          Write-Host "Tailscale IP: $ts_ip"
-          Write-Host "RDP Port: $env:RDP_PORT"
 
           $result = Test-NetConnection `
             -ComputerName $ts_ip `
@@ -321,41 +252,32 @@ jobs:
             -WarningAction SilentlyContinue
 
           if (-not $result.TcpTestSucceeded) {
-              throw "RDP connectivity test failed."
+              throw 'RDP connectivity test failed.'
           }
 
-          Write-Host "RDP connectivity successful."
+          Write-Host 'RDP connectivity successful.'
 
 
-      # ============================================================
-      # 7. Display server information
-      # ============================================================
-      - name: 7. Display Server Information
+      - name: 7. Server Information
         shell: powershell
         run: |
-          $ErrorActionPreference = "Stop"
-
-          $TailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
+          $TailscaleExe = 'C:\Program Files\Tailscale\tailscale.exe'
           $ts_ip = (& $TailscaleExe ip -4).Trim()
 
-          Write-Host ""
-          Write-Host "=============================================="
-          Write-Host "            RDP SERVER IS READY"
-          Write-Host "=============================================="
+          Write-Host ''
+          Write-Host '=============================================='
+          Write-Host '            RDP SERVER IS READY'
+          Write-Host '=============================================='
           Write-Host "Tailscale IP : $ts_ip"
           Write-Host "Username     : $env:RDP_USER"
-          Write-Host "Password     : Stored in GitHub Secret"
-          Write-Host "Administrator: YES"
+          Write-Host 'Password     : Stored in GitHub Secret'
+          Write-Host 'Administrator: YES'
           Write-Host "RDP Port     : $env:RDP_PORT"
-          Write-Host "Lifetime     : 6 Hours"
-          Write-Host "=============================================="
-          Write-Host ""
+          Write-Host 'Lifetime     : 6 Hours'
+          Write-Host '=============================================='
 
 
-      # ============================================================
-      # 8. Keep the runner alive for 6 hours
-      # ============================================================
-      - name: 8. Keep Server Alive (6 Hours)
+      - name: 8. Keep Server Alive
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -364,4 +286,3 @@ jobs:
               Start-Sleep -Seconds 60
               Write-Host "[$i/360] Server running..."
           }
-```
