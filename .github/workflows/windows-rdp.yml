@@ -1,3 +1,4 @@
+```yaml
 name: Windows Cloud RDP
 
 on:
@@ -22,7 +23,7 @@ jobs:
     steps:
 
       # ============================================================
-      # 1. Enable Remote Desktop securely
+      # 1. Enable Remote Desktop
       # ============================================================
       - name: 1. Enable Remote Desktop
         shell: powershell
@@ -37,12 +38,15 @@ jobs:
             -Value 0 `
             -Force
 
+          # Enable Network Level Authentication (NLA)
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
             -Name "UserAuthentication" `
             -Value 1 `
             -Force
 
+          # Disable Windows built-in broad RDP firewall rules.
+          # A Tailscale-only rule is created later.
           Disable-NetFirewallRule `
             -DisplayGroup "Remote Desktop" `
             -ErrorAction SilentlyContinue
@@ -51,7 +55,7 @@ jobs:
 
 
       # ============================================================
-      # 2. Create RDP account
+      # 2. Create RDP Administrator account
       # ============================================================
       - name: 2. Create RDP Account
         shell: powershell
@@ -71,6 +75,7 @@ jobs:
             -AsPlainText `
             -Force
 
+          # Remove existing account with the same name
           $ExistingUser = Get-LocalUser `
             -Name $env:RDP_USER `
             -ErrorAction SilentlyContinue
@@ -83,25 +88,34 @@ jobs:
                 -ErrorAction Stop
           }
 
+          # Create the local user
           New-LocalUser `
             -Name $env:RDP_USER `
             -Password $SecurePassword `
             -PasswordNeverExpires:$false `
             -AccountNeverExpires:$false `
-            -Description "Temporary GitHub Actions RDP user" `
+            -Description "Temporary GitHub Actions RDP administrator" `
             -ErrorAction Stop
 
+          # Allow RDP login
           Add-LocalGroupMember `
             -Group "Remote Desktop Users" `
             -Member $env:RDP_USER `
             -ErrorAction Stop
 
+          # Administrator privileges
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member $env:RDP_USER `
+            -ErrorAction Stop
+
           Write-Host "RDP account created successfully."
-          Write-Host "Administrator privileges: NO"
+          Write-Host "Username: $env:RDP_USER"
+          Write-Host "Administrator: YES"
 
 
       # ============================================================
-      # 3. Install applications with WinGet
+      # 3. Install selected applications with WinGet
       # ============================================================
       - name: 3. Install Applications with WinGet
         shell: powershell
@@ -118,10 +132,11 @@ jobs:
               exit 0
           }
 
-          Write-Host "Requested applications:"
+          Write-Host "Applications requested:"
           Write-Host $AppsInput
           Write-Host ""
 
+          # Split comma-separated IDs
           $Packages = $AppsInput `
             -split ',' `
             | ForEach-Object { $_.Trim() } `
@@ -132,6 +147,7 @@ jobs:
               throw "No valid WinGet package IDs were provided."
           }
 
+          # Check WinGet availability
           $Winget = Get-Command winget.exe -ErrorAction SilentlyContinue
 
           if (-not $Winget) {
@@ -213,10 +229,21 @@ jobs:
 
           & $TailscaleExe up `
             --authkey="$env:TAILSCALE_AUTHKEY" `
-            --hostname="$env:TAILSCALE_HOSTNAME"
+            --hostname="$env:TAILSCALE_HOSTNAME" `
+            --accept-routes=false `
+            --shields-up=false `
+            --unattended
 
           if ($LASTEXITCODE -ne 0) {
               throw "Tailscale connection failed."
+          }
+
+          # Explicitly ensure subnet routes stay disabled.
+          & $TailscaleExe set `
+            --accept-routes=false
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Failed to disable Tailscale subnet routes."
           }
 
           Start-Sleep -Seconds 8
@@ -228,6 +255,8 @@ jobs:
           }
 
           Write-Host "Tailscale IPv4: $ts_ip"
+          Write-Host "Accept subnet routes: FALSE"
+          Write-Host "Incoming Tailscale connections: ENABLED"
 
 
       # ============================================================
@@ -242,16 +271,19 @@ jobs:
 
           Write-Host "Configuring RDP firewall..."
 
+          # Disable Windows' broad RDP rules
           Disable-NetFirewallRule `
             -DisplayGroup "Remote Desktop" `
             -ErrorAction SilentlyContinue
 
+          # Remove old copies of our custom rule
           Get-NetFirewallRule `
             -DisplayName $RuleName `
             -ErrorAction SilentlyContinue |
             Remove-NetFirewallRule `
             -ErrorAction SilentlyContinue
 
+          # Allow RDP only from Tailscale's CGNAT range
           New-NetFirewallRule `
             -DisplayName $RuleName `
             -Direction Inbound `
@@ -297,9 +329,9 @@ jobs:
 
 
       # ============================================================
-      # 7. Keep the runner alive for 6 hours
+      # 7. Display server information
       # ============================================================
-      - name: 7. Keep Server Alive (6 Hours)
+      - name: 7. Display Server Information
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -314,13 +346,23 @@ jobs:
           Write-Host "Tailscale IP : $ts_ip"
           Write-Host "Username     : $env:RDP_USER"
           Write-Host "Password     : Stored in GitHub Secret"
-          Write-Host "Administrator: NO"
+          Write-Host "Administrator: YES"
           Write-Host "RDP Port     : $env:RDP_PORT"
           Write-Host "Lifetime     : 6 Hours"
           Write-Host "=============================================="
           Write-Host ""
 
+
+      # ============================================================
+      # 8. Keep the runner alive for 6 hours
+      # ============================================================
+      - name: 8. Keep Server Alive (6 Hours)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
           for ($i = 1; $i -le 360; $i++) {
               Start-Sleep -Seconds 60
               Write-Host "[$i/360] Server running..."
           }
+```
