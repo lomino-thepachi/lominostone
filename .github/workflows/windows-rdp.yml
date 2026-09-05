@@ -15,9 +15,9 @@ jobs:
     timeout-minutes: 360
 
     env:
-      RDP_USER: NvDAdmin
+      RDP_USER: Arash110
       RDP_PORT: "3389"
-      TAILSCALE_HOSTNAME: github-rdp-server
+      TAILSCALE_HOSTNAME: github-rdp-${{ github.run_id }}
 
     steps:
 
@@ -37,6 +37,11 @@ jobs:
             -Name 'UserAuthentication' `
             -Value 1 `
             -Force
+
+          # Ensure the Remote Desktop service is running
+          Set-Service -Name TermService -StartupType Automatic -ErrorAction Stop
+          Start-Service -Name TermService -ErrorAction SilentlyContinue
+          Restart-Service -Name TermService -Force -ErrorAction SilentlyContinue
 
           Disable-NetFirewallRule `
             -DisplayGroup 'Remote Desktop' `
@@ -75,6 +80,7 @@ jobs:
             -Name $env:RDP_USER `
             -Password $SecurePassword `
             -PasswordNeverExpires:$false `
+            -UserMayNotChangePassword $true `
             -AccountNeverExpires:$false `
             -Description 'Temporary GitHub Actions RDP administrator' `
             -ErrorAction Stop
@@ -129,6 +135,7 @@ jobs:
                 --accept-package-agreements `
                 --accept-source-agreements `
                 --disable-interactivity `
+                --scope machine `
                 --no-upgrade
 
               if ($LASTEXITCODE -ne 0) {
@@ -168,7 +175,7 @@ jobs:
             -Force `
             -ErrorAction SilentlyContinue
 
-          Start-Sleep -Seconds 5
+          Start-Sleep -Seconds 8
 
           if (-not (Test-Path $TailscaleExe)) {
               throw 'Tailscale executable was not found.'
@@ -178,6 +185,7 @@ jobs:
             --authkey="$env:TAILSCALE_AUTHKEY" `
             --hostname="$env:TAILSCALE_HOSTNAME" `
             --accept-routes=false `
+            --accept-dns=false `
             --unattended
 
           if ($LASTEXITCODE -ne 0) {
@@ -191,9 +199,13 @@ jobs:
               throw 'Failed to disable Tailscale subnet routes.'
           }
 
-          Start-Sleep -Seconds 8
-
-          $ts_ip = (& $TailscaleExe ip -4).Trim()
+          # Retry to get the Tailscale IPv4 address
+          $ts_ip = $null
+          for ($j = 1; $j -le 12; $j++) {
+              $ts_ip = (& $TailscaleExe ip -4).Trim()
+              if (-not [string]::IsNullOrWhiteSpace($ts_ip)) { break }
+              Start-Sleep -Seconds 3
+          }
 
           if ([string]::IsNullOrWhiteSpace($ts_ip)) {
               throw 'Tailscale IPv4 address was not assigned.'
@@ -229,6 +241,7 @@ jobs:
             -RemoteAddress '100.64.0.0/10' `
             -Action Allow `
             -Profile Any `
+            -Enabled True `
             -ErrorAction Stop
 
           Write-Host 'RDP is restricted to Tailscale.'
@@ -269,6 +282,7 @@ jobs:
           Write-Host '            RDP SERVER IS READY'
           Write-Host '=============================================='
           Write-Host "Tailscale IP : $ts_ip"
+          Write-Host "Hostname     : $env:TAILSCALE_HOSTNAME"
           Write-Host "Username     : $env:RDP_USER"
           Write-Host 'Password     : Stored in GitHub Secret'
           Write-Host 'Administrator: YES'
@@ -281,8 +295,17 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+          $TailscaleExe = 'C:\Program Files\Tailscale\tailscale.exe'
 
           for ($i = 1; $i -le 360; $i++) {
               Start-Sleep -Seconds 60
               Write-Host "[$i/360] Server running..."
+
+              # Check Tailscale status every 10 minutes
+              if ($i % 10 -eq 0) {
+                  $status = & $TailscaleExe status --json 2>$null
+                  if (-not $?) {
+                      Write-Host "Warning: Tailscale status check failed at minute $i"
+                  }
+              }
           }
