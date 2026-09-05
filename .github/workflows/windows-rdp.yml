@@ -20,37 +20,59 @@ jobs:
       TAILSCALE_HOSTNAME: github-rdp-${{ github.run_id }}
 
     steps:
-
       - name: 1. Enable Remote Desktop
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          Set-ItemProperty `
-            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name 'fDenyTSConnections' `
-            -Value 0 `
-            -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 1 -Force
 
-          Set-ItemProperty `
-            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'UserAuthentication' `
-            -Value 1 `
-            -Force
-
-          # Ensure the Remote Desktop service is running
           Set-Service -Name TermService -StartupType Automatic -ErrorAction Stop
           Start-Service -Name TermService -ErrorAction SilentlyContinue
           Restart-Service -Name TermService -Force -ErrorAction SilentlyContinue
 
-          Disable-NetFirewallRule `
-            -DisplayGroup 'Remote Desktop' `
-            -ErrorAction SilentlyContinue
+          Disable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue
 
           Write-Host 'Remote Desktop enabled with NLA.'
-
 
       - name: 2. Create RDP Administrator Account
         shell: powershell
         env:
-          RDP_PASSWORD: ${{ secrets.RDP_
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
+            throw 'RDP_PASSWORD GitHub Secret is missing.'
+          }
+
+          $SecurePassword = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+
+          $ExistingUser = Get-LocalUser -Name $env:RDP_USER -ErrorAction SilentlyContinue
+          if ($ExistingUser) {
+            Remove-LocalUser -Name $env:RDP_USER -ErrorAction Stop
+          }
+
+          New-LocalUser `
+            -Name $env:RDP_USER `
+            -Password $SecurePassword `
+            -PasswordNeverExpires:$false `
+            -UserMayNotChangePassword:$true `
+            -AccountNeverExpires:$false `
+            -Description 'Temporary GitHub Actions RDP administrator' `
+            -ErrorAction Stop
+
+          Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $env:RDP_USER -ErrorAction Stop
+          Add-LocalGroupMember -Group 'Administrators' -Member $env:RDP_USER -ErrorAction Stop
+
+          Write-Host 'RDP Administrator account created.'
+
+      - name: 3. Install Applications with WinGet
+        shell: powershell
+        env:
+          APPS_INPUT: ${{ inputs.apps }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($
